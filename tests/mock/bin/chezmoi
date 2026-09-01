@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Mock chezmoi used by tests/run.sh to exercise chezmoi-axi behavior
+# hermetically (no real home state). Responds deterministically per subcommand.
+set -euo pipefail
+
+# The wrapper calls chezmoi from PATH with HOME pointing at a temp dir, so we
+# can seed fixture data under $CHEZMOI_FIXTURE (set by the test runner).
+FIXTURE="${CHEZMOI_FIXTURE:-}"
+SRC="${HOME}/.local/share/chezmoi"
+
+# Read managed-file list from the fixture, or default to an empty list.
+managed_files() {
+  if [[ -f "${FIXTURE}/managed.txt" ]]; then
+    cat "${FIXTURE}/managed.txt"
+  fi
+}
+
+# Read source-file list (relative paths under CHEZMOI_SRC) for diff/re-add.
+changed_files() {
+  if [[ -f "${FIXTURE}/changed.txt" ]]; then
+    cat "${FIXTURE}/changed.txt"
+  fi
+}
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  managed)
+    if [[ "${1:-}" == "--include" ]]; then
+      shift
+    fi
+    managed_files
+    ;;
+  diff)
+    # Emit a 'diff --git' header per changed file so the wrapper counts them.
+    f=""
+    while read -r f; do
+      [[ -n "$f" ]] && echo "diff --git a/${f} b/${f}"
+    done < <(changed_files)
+    ;;
+  git)
+    # git subcommand passthrough.
+    sub="${1:-}"
+    shift || true
+    case "$sub" in
+      fetch)
+        # Record that a fetch happened so tests can assert on it.
+        mkdir -p "${SRC}"
+        : > "${SRC}/.fetch-marker"
+        ;;
+      --)
+        # `chezmoi git -- <cmd> ...` — the wrapper routes all git calls
+        # through `--`; answer from fixture if present.
+        case "${1:-}" in
+          log)
+            if [[ "$2" == "-1" ]]; then
+              echo "${MOCK_GIT_EPOCH:-0}"
+            elif [[ "$*" == *"origin/master..HEAD"* ]]; then
+              # Unpushed local commits on a feature branch; with --no-merges,
+              # mock merge commits (lines containing "Merge") are excluded.
+              if [[ -f "${FIXTURE}/local_commits.txt" ]]; then
+                if [[ "$*" == *"--no-merges"* ]]; then
+                  grep -iv merge "${FIXTURE}/local_commits.txt" || true
+                else
+                  cat "${FIXTURE}/local_commits.txt"
+                fi
+              fi
+            elif [[ "$*" == *"HEAD..origin/"* ]]; then
+              n=0
+              [[ -f "${FIXTURE}/remote_commits.txt" ]] && n=$(wc -l < "${FIXTURE}/remote_commits.txt")
+              i=""
+              for (( i=0; i<n; i++ )); do
+                echo "abc1234 commit $i"
+              done
+            fi
+            ;;
+          merge-base)
+            # HEAD is an ancestor of origin/master unless the fixture seeds
+            # local (non-merged) commits.
+            if [[ -f "${FIXTURE}/local_commits.txt" ]] && [[ -s "${FIXTURE}/local_commits.txt" ]]; then
+              exit 1
+            fi
+            ;;
+          branch)
+            if [[ "${2:-}" == "--show-current" ]]; then
+              if [[ -f "${FIXTURE}/current_branch.txt" ]]; then
+                cat "${FIXTURE}/current_branch.txt"
+              else
+                echo "master"
+              fi
+            fi
+            ;;
+          status)
+            # Non-empty fixture = dirty tree.
+            if [[ "${2:-}" == "--porcelain" && -f "${FIXTURE}/dirty.txt" ]]; then
+              cat "${FIXTURE}/dirty.txt"
+            fi
+            ;;
+          rev-parse)
+            # origin/HEAD default-branch probe
+            echo "origin/master"
+            ;;
+          checkout)
+            # Record checkouts so tests can assert on them.
+            mkdir -p "${SRC}"
+            echo "${2:-}" >> "${FIXTURE}/checkout.log"
+            ;;
+        esac
+        ;;
+      log)
+        # `chezmoi git -- log --oneline HEAD..origin/master`
+        if [[ "$*" == *"HEAD..origin/"* ]]; then
+          n=0
+          [[ -f "${FIXTURE}/remote_commits.txt" ]] && n=$(wc -l < "${FIXTURE}/remote_commits.txt")
+          i=""
+          for (( i=0; i<n; i++ )); do
+            echo "abc1234 commit $i"
+          done
+        fi
+        ;;
+    esac
+    ;;
+  verify)
+    if [[ -f "${FIXTURE}/drifted.txt" ]]; then
+      while read -r f; do
+        [[ -n "$f" ]] && echo "${f} has changed"
+      done < "${FIXTURE}/drifted.txt"
+      exit 1
+    fi
+    exit 0
+    ;;
+  re-add)
+    if [[ "${1:-}" == "--dry-run" ]]; then
+      shift
+      # dry-run + verbose: first non-flag arg is the file
+      f=""
+      for a in "$@"; do [[ "$a" != -* ]] && f="$a" && break; done
+      if [[ -f "${FIXTURE}/readd.txt" ]] && grep -qx "${f}" "${FIXTURE}/readd.txt"; then
+        echo "would update ${f}"
+      fi
+    else
+      # real re-add: succeed
+      echo "re-add ok"
+    fi
+    ;;
+  add)
+    echo "ok"
+    ;;
+  update)
+    if [[ "${1:-}" == "--force" ]]; then
+      shift
+    fi
+    echo "chezmoi update ok"
+    ;;
+  *)
+    echo "mock: unknown subcommand: ${cmd}" >&2
+    exit 127
+    ;;
+esac
