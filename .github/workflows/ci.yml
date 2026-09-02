@@ -28,3 +28,6 @@ jobs:
 
       - name: Test suite
         run: ./tests/run.sh
+
+      - name: Packaging check (dry-run publish, no registry access)
+        run: npm publish --dry-run

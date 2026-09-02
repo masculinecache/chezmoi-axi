@@ -10,7 +10,11 @@ truncation with a `--full` escape hatch, and structured errors with actionable s
 
 ## Install
 
-Copy the single self-contained script to a directory on `PATH`:
+```sh
+npm install -g @masculinecache/chezmoi-axi
+```
+
+Or copy the single self-contained script to a directory on `PATH`:
 
 ```sh
 install -m 0755 chezmoi-axi ~/.local/bin/chezmoi-axi
