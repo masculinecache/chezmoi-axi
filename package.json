@@ -1,0 +1,37 @@
+{
+  "name": "@masculinecache/chezmoi-axi",
+  "version": "0.1.0",
+  "description": "Agent-ergonomic TOON wrapper around chezmoi for token-efficient dotfiles management",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/masculinecache/chezmoi-axi.git"
+  },
+  "homepage": "https://github.com/masculinecache/chezmoi-axi#readme",
+  "bugs": {
+    "url": "https://github.com/masculinecache/chezmoi-axi/issues"
+  },
+  "keywords": [
+    "chezmoi",
+    "dotfiles",
+    "cli",
+    "bash",
+    "agent",
+    "axi",
+    "toon"
+  ],
+  "bin": {
+    "chezmoi-axi": "chezmoi-axi"
+  },
+  "files": [
+    "chezmoi-axi",
+    "LICENSE",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "bash tests/run.sh"
+  },
+  "license": "MIT"
+}
