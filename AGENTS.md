@@ -13,13 +13,15 @@ When updating this file, preserve this bar for all agents and keep entries conci
 
 ## Safety: the live home is radioactive
 
-A 2026-09-02 incident on another host crippled a machine by running repo tooling against the LIVE chezmoi state.
-Therefore, in this repo:
+SAFETY RULE (chezmoi incident 2026-09-02 on another server): never run chezmoi or chezmoi-axi against the real host state; no command may read or write ~/.local/share/chezmoi, ~/.config/chezmoi, or live $HOME dotfiles; all tests/demos hermetic (fake HOME via mktemp -d, CHEZMOI_SOURCE_DIR inside the disposable worktree); anything not hermetic gets cut, not pointed at the live home.
+
+In this repo (a 2026-09-02 incident on another host crippled a machine by running repo tooling against the LIVE chezmoi state):
 
 - NEVER run `chezmoi` or `chezmoi-axi` against real host state: no command that reads or writes
   `~/.local/share/chezmoi`, `~/.config/chezmoi`, or `$HOME` dotfiles. Treat those paths as radioactive.
-- ALL tests and demos run hermetically: fake `HOME` (`mktemp -d`), mock `chezmoi` on `PATH`
-  (`tests/mock/bin`), no network `chezmoi init`/`apply` against real remotes.
+- ALL tests and demos run hermetically: fake `HOME` (`mktemp -d`) so `CHEZMOI_SRC="${HOME}/.local/share/chezmoi"`
+  resolves inside the sandbox, mock `chezmoi` on `PATH` (`tests/mock/bin`), no network
+  `chezmoi init`/`apply` against real remotes.
 - If a test or script cannot be made hermetic, cut it and note it in the PR — never point anything at the live home.
 
 ## Test
@@ -43,11 +45,12 @@ flag, missing arg, unknown command) are `2`. `usage_error()` in `chezmoi-axi` ex
 
 ## GitHub credentials
 
-- All GitHub operations for this repo use the `masculinecache` account only. Run every `gh`/`gh-axi` call with
-  `GH_CONFIG_DIR=$HOME/.config/gh-masculinecache` exported first; never bare `gh` on ambient config.
-- `git push` resolves to masculinecache via the repo-local credential helper (blank-reset + masculinecache
-  helper); do not alter it.
-- On any gh auth failure: stop and report blocked. Never retry with different credentials.
+CREDENTIAL RULE: every GitHub operation on this repo uses the masculinecache account ONLY - never the global phillias credentials. Every gh/gh-axi call exports GH_CONFIG_DIR=$HOME/.config/gh-masculinecache (repo .mise.toml already sets it for mise-hooked shells). git push flows through the repo-local credential helper; never alter it. Any gh auth failure: stop and report blocked; never switch credentials.
+
+- Repo `.mise.toml` also pins `GH_REPO` (HOME-relative values only: `~` or `$HOME`, never absolute paths);
+  never bare `gh` on ambient config.
+- The repo-local credential helper is a blank reset plus the masculinecache `gh auth git-credential` helper
+  for `https://github.com`; leave it exactly as configured.
 
 ## npm packaging
 
