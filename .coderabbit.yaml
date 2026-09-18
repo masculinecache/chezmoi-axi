@@ -1,0 +1,11 @@
+reviews:
+  profile: "assertive"
+  path_filters:
+    - "!**/node_modules/**"
+    - "!**/*.lock"
+    - "!**/package-lock.json"
+  review_instructions: |
+    Focus on dotfiles management and portability.
+    Check chezmoi template syntax is valid.
+    Verify file operations don't break cross-platform compatibility.
+    Flag hardcoded absolute home paths that break portability.
