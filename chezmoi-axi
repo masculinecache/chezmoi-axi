@@ -903,7 +903,7 @@ cmd_graph() {
 
     case "$base" in
       *.service|*.service.tmpl)
-        local exec_lines deps wanted_by
+        local exec_lines deps wanted_by env_lines
         exec_lines=$(rg -o 'ExecStart[^\n]*' "$full_path" 2>/dev/null || true)
         while IFS= read -r el; do
           [[ -z "$el" ]] && continue
@@ -933,6 +933,15 @@ cmd_graph() {
           target=$(echo "$wb" | sed 's/^WantedBy=//' | cut -d' ' -f1)
           [[ -n "$target" ]] && add_edge "$target" "$rel" "target->unit"
         done <<< "$wanted_by"
+
+        env_lines=$(rg -o 'Environment[= ][^\n]*' "$full_path" 2>/dev/null || true)
+        while IFS= read -r el; do
+          [[ -z "$el" ]] && continue
+          local env_content env_name
+          env_content=$(echo "$el" | sed 's/^Environment[= ]*//')
+          env_name=$(echo "$env_content" | cut -d= -f1 | cut -d' ' -f1)
+          [[ -n "$env_name" ]] && add_edge "$rel" "$env_name" "var-def"
+        done <<< "$env_lines"
         ;;
       *.timer)
         local unit_ref
@@ -1010,16 +1019,16 @@ cmd_graph() {
     case "$base" in
       *.md)
         local wiki_refs
-        wiki_refs=$(rg -o '\[\[([^\]|#]+)(?:#[^\]]+)?\]\]' "$full_path" 2>/dev/null \
-          | sed 's/^\[\[//' | sed 's/\]\]$//' | sed 's/#.*//' | sort -u || true)
+        wiki_refs=$(rg -o '\[\[[^\[\]]+\]\]' "$full_path" 2>/dev/null \
+          | sed 's/^\[\[//' | sed 's/\]\]$//' | sed 's/|.*//' | sed 's/#.*//' | sort -u || true)
         local wr
         for wr in $wiki_refs; do
           [[ -n "$wr" ]] && add_edge "$rel" "$wr" "md-wikilink"
         done
 
         local md_links
-        md_links=$(rg -o '\[[^\]]+\]\((?!https?://)([^)]+)\)' "$full_path" 2>/dev/null \
-          | sed 's/.*(\(.*\))/\1/' | sort -u || true)
+        md_links=$(rg -o '\[[^\]]+\]\((?!https?://)[^)\n]+\)' "$full_path" 2>/dev/null \
+          | sed 's/^[^]]*\](\(.*\))$/\1/' | sort -u || true)
         local ml
         for ml in $md_links; do
           [[ -n "$ml" ]] && add_edge "$rel" "$ml" "md-link"
