@@ -613,6 +613,315 @@ _sync_run() {
   help_hint "Run \`chezmoi-axi verify\` to confirm state"
 }
 
+src_to_target() {
+  local src_rel="$1" path="$1"
+  path="${path#dot_}"
+  path="${path#private_}"
+  path="${path#executable_}"
+  path="${path#encrypted_}"
+  path="${path#symlink_}"
+  path="${path#run_once_}"
+  path="${path#run_onchange_}"
+  path="${path#run_onchange_after_}"
+  path="${path#run_onchange_before_}"
+  if [[ "$src_rel" == dot_* ]]; then
+    path=".${path}"
+  elif [[ "$src_rel" == private_dot_* ]]; then
+    path=".${path}"
+  fi
+  path="${path%.tmpl}"
+  path="${path%.age}"
+  if [[ "$src_rel" == dot_config/* || "$src_rel" == private_dot_config/* ]]; then
+    path=".config/${path#config/}"
+  fi
+  if [[ "$src_rel" == dot_local/* || "$src_rel" == private_dot_local/* ]]; then
+    path=".local/${path#local/}"
+  fi
+  echo "~/${path}"
+}
+
+cmd_graph() {
+  local node_limit=50 edge_limit=100 full=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --full)   full=true; shift ;;
+      --nodes)  node_limit="$2"; shift 2 ;;
+      --edges)  edge_limit="$2"; shift 2 ;;
+      -h|--help)
+        echo "Usage: chezmoi-axi graph [--full] [--nodes N] [--edges N]"
+        echo "  --full       Show all nodes and edges (bypass caps)"
+        echo "  --nodes N    Max nodes to display (default 50)"
+        echo "  --edges N    Max edges to display (default 100)"
+        echo ""
+        echo "Parses the chezmoi source tree into a relationship graph:"
+        echo "  source->target   filename conventions (dot_ executable_ symlink_ .tmpl)"
+        echo "  template->var    {{ .chezmoi.* }} and {{ .custom }} references"
+        echo "  unit->exec       ExecStart= in systemd units"
+        echo "  unit->dep        After= Requires= Wants= in systemd units"
+        echo "  timer->unit      Unit= in timer files (implicit by name)"
+        echo "  script->source   source/. commands in shell scripts"
+        echo "  script->bin      command calls via \$HOME/.local/bin references"
+        echo "  symlink->target  symlink_ prefix resolution"
+        exit 0 ;;
+      -*) usage_error "unknown flag: $1" "chezmoi-axi graph [--full] [--nodes N] [--edges N]" ;;
+      *)  usage_error "unexpected argument: $1" "chezmoi-axi graph [--full] [--nodes N] [--edges N]" ;;
+    esac
+  done
+
+  if ! command -v rg >/dev/null 2>&1; then
+    die "ripgrep (rg) is required but not found on PATH" "Install ripgrep: https://github.com/BurntSushi/ripgrep"
+  fi
+
+  [[ ! -d "$CHEZMOI_SRC" ]] && die "chezmoi source dir not found: $CHEZMOI_SRC" "Run \`chezmoi init\` first"
+
+  local tmp_nodes tmp_edges
+  tmp_nodes=$(mktemp)
+  tmp_edges=$(mktemp)
+
+  : > "$tmp_nodes"
+  : > "$tmp_edges"
+
+  add_node() {
+    local rel="$1"
+    grep -qxF "$rel" "$tmp_nodes" 2>/dev/null && return 0
+    echo "$rel" >> "$tmp_nodes"
+  }
+
+  add_edge() {
+    local from="$1" to="$2" kind="$3"
+    local line="${from}|${to}|${kind}"
+    grep -qxF "$line" "$tmp_edges" 2>/dev/null && return 0
+    echo "$line" >> "$tmp_edges"
+  }
+
+  classify() {
+    local base="$1"
+    case "$base" in
+      executable_*)  echo "script" ;;
+      symlink_*)     echo "symlink" ;;
+      encrypted_*)   echo "encrypted" ;;
+      *.service.tmpl) echo "svc" ;;
+      *.service)     echo "svc" ;;
+      *.timer)       echo "timer" ;;
+      run_once_*)    echo "run-once" ;;
+      run_onchange_*) echo "run-onchange" ;;
+      *.tmpl)        echo "template" ;;
+      dot_*)         echo "config" ;;
+      private_*)     echo "private" ;;
+      *)             echo "file" ;;
+    esac
+  }
+
+  while IFS= read -r -d '' src; do
+    local base
+    base=$(basename "$src")
+    [[ "$base" == .* ]] && continue
+    [[ "$base" == *.bak ]] && continue
+    local rel="${src#"$CHEZMOI_SRC/"}"
+    add_node "$rel"
+  done < <(find "$CHEZMOI_SRC" -type f -not -path '*/.git/*' -print0 | sort -z)
+
+  while IFS= read -r rel; do
+    [[ -z "$rel" ]] && continue
+    local base
+    base=$(basename "$rel")
+    local target_path
+    target_path=$(src_to_target "$rel")
+
+    case "$base" in
+      dot_*|executable_*|encrypted_*|private_*|run_once_*|run_onchange_*)
+        add_edge "$rel" "$target_path" "source->target"
+        ;;
+      symlink_*)
+        local link_target
+        link_target=$(readlink "${CHEZMOI_SRC}/${rel}" 2>/dev/null || true)
+        [[ -n "$link_target" ]] && add_edge "$rel" "$link_target" "symlink->target"
+        add_edge "$rel" "$target_path" "source->target"
+        ;;
+    esac
+  done < "$tmp_nodes"
+
+  while IFS= read -r rel; do
+    [[ -z "$rel" ]] && continue
+    local full_path="${CHEZMOI_SRC}/${rel}"
+    local base
+    base=$(basename "$rel")
+
+    if [[ "$base" == *.tmpl ]]; then
+      local vars
+      vars=$(rg -o '\{\{\s*\.([a-zA-Z_][a-zA-Z0-9_.]*)' "$full_path" 2>/dev/null \
+        | sed 's/{{ *\.//' | sort -u || true)
+      local v
+      for v in $vars; do
+        add_edge "$rel" "{{ .${v} }}" "template->var"
+      done
+    fi
+
+    case "$base" in
+      *.service|*.service.tmpl)
+        local exec_lines deps wanted_by
+        exec_lines=$(rg -o 'ExecStart[^\n]*' "$full_path" 2>/dev/null || true)
+        while IFS= read -r el; do
+          [[ -z "$el" ]] && continue
+          local cmd
+          cmd=$(echo "$el" \
+            | sed 's/^ExecStart[= ]*//' \
+            | sed 's/%h/$HOME/g' \
+            | sed 's/{{ *\.chezmoi\.homeDir *}}/$HOME/g')
+          local bin_name
+          bin_name=$(echo "$cmd" | sed 's|\$HOME/||' | sed 's|/.*/||' | awk '{print $1}')
+          [[ -n "$bin_name" && "$bin_name" != *"="{{* ]] \
+            && add_edge "$rel" "$bin_name" "unit->exec"
+        done <<< "$exec_lines"
+
+        deps=$(rg -o '(?:After|Requires|Wants)=[^\n]*' "$full_path" 2>/dev/null || true)
+        while IFS= read -r dl; do
+          [[ -z "$dl" ]] && continue
+          local dep_name
+          dep_name=$(echo "$dl" | sed 's/^\(After\|Requires\|Wants\)=//' | cut -d' ' -f1)
+          [[ -n "$dep_name" ]] && add_edge "$rel" "$dep_name" "unit->dep"
+        done <<< "$deps"
+
+        wanted_by=$(rg -o 'WantedBy=[^\n]*' "$full_path" 2>/dev/null || true)
+        while IFS= read -r wb; do
+          [[ -z "$wb" ]] && continue
+          local target
+          target=$(echo "$wb" | sed 's/^WantedBy=//' | cut -d' ' -f1)
+          [[ -n "$target" ]] && add_edge "$target" "$rel" "target->unit"
+        done <<< "$wanted_by"
+        ;;
+      *.timer)
+        local unit_ref
+        unit_ref=$(rg -o 'Unit=[^\n]*' "$full_path" 2>/dev/null || true)
+        if [[ -n "$unit_ref" ]]; then
+          local timer_target
+          timer_target=$(echo "$unit_ref" | sed 's/^Unit=//' | cut -d' ' -f1)
+          [[ -n "$timer_target" ]] && add_edge "$rel" "$timer_target" "timer->unit"
+        else
+          local implied
+          implied=$(echo "$rel" | sed 's/\.timer$//')
+          add_edge "$rel" "${implied}.service" "timer->unit"
+        fi
+        ;;
+    esac
+
+    case "$base" in
+      executable_*|run_once_*|run_onchange_*|dot_bashrc|dot_zshrc|dot_profile)
+        local source_refs bin_refs
+        source_refs=$(rg -o '(?:source|\.)\s+[$~/][^ "'\''
+;&|]+' "$full_path" 2>/dev/null || true)
+        while IFS= read -r s; do
+          [[ -z "$s" ]] && continue
+          s=$(echo "$s" | sed 's/^[a-z]*[[:space:]]*//' | sed 's/\$HOME/~/g' | sed 's/%h/~/g')
+          add_edge "$rel" "$s" "script->source"
+        done <<< "$source_refs"
+
+        bin_refs=$(rg -o '\$HOME/\.local/bin/[a-zA-Z0-9_-]+' "$full_path" 2>/dev/null || true)
+        local b
+        for b in $(echo "$bin_refs" | sed 's|.*bin/||' | sort -u); do
+          [[ -n "$b" ]] && add_edge "$rel" "$b" "script->bin"
+        done
+        ;;
+    esac
+  done < "$tmp_nodes"
+
+  local node_count edge_count
+  node_count=$(wc -l < "$tmp_nodes")
+  edge_count=$(wc -l < "$tmp_edges")
+
+  if (( node_count == 0 )); then
+    rm -f "$tmp_nodes" "$tmp_edges"
+    echo "graph: 0 nodes found in source tree"
+    help_hint "Run \`chezmoi-axi status\` to check source state"
+    return 0
+  fi
+
+  local hubs_tmp
+  hubs_tmp=$(mktemp)
+
+  cut -d'|' -f2 "$tmp_edges" > "$hubs_tmp"
+  local hub_lines
+  hub_lines=$(sort "$hubs_tmp" | uniq -c | sort -rn | head -10)
+
+  local edge_kinds
+  edge_kinds=$(cut -d'|' -f3 "$tmp_edges" | sort | uniq -c | sort -rn)
+
+  if [[ "$full" != "true" ]]; then
+    local disp_n="$node_count" disp_e="$edge_count"
+    if (( node_count > node_limit )); then disp_n="$node_limit"; fi
+    if (( edge_count > edge_limit )); then disp_e="$edge_limit"; fi
+
+    echo "graph:"
+    if (( node_count > node_limit )); then
+      echo "  nodes: ${disp_n} of ${node_count} total"
+    else
+      echo "  nodes: ${disp_n}"
+    fi
+    if (( edge_count > edge_limit )); then
+      echo "  edges: ${disp_e} of ${edge_count} total"
+    else
+      echo "  edges: ${disp_e}"
+    fi
+  else
+    echo "graph:"
+    echo "  nodes: ${node_count}"
+    echo "  edges: ${edge_count}"
+  fi
+
+  echo ""
+  echo "edge_kinds:"
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    echo "  $line"
+  done <<< "$edge_kinds"
+
+  if [[ -n "$hub_lines" ]]; then
+    echo ""
+    echo "hubs[10]{node,edges_in}:"
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      local count node
+      count=$(echo "$line" | awk '{print $1}')
+      node=$(echo "$line" | awk '{$1=""; print}' | sed 's/^ //')
+      echo "  ${node},${count}"
+    done <<< "$hub_lines"
+  fi
+
+  local show_n=$node_count
+  [[ "$full" != "true" && "$node_count" -gt "$node_limit" ]] && show_n=$node_limit
+  echo ""
+  echo "nodes[${show_n}]{source,type}:"
+  local n=0
+  while IFS= read -r rel; do
+    [[ -z "$rel" ]] && continue
+    (( n >= show_n )) && break
+    echo "  ${rel},$(classify "$(basename "$rel")")"
+    (( n++ )) || true
+  done < <(sort "$tmp_nodes")
+
+  local show_e=$edge_count
+  [[ "$full" != "true" && "$edge_count" -gt "$edge_limit" ]] && show_e=$edge_limit
+  echo ""
+  echo "edges[${show_e}]{from,to,kind}:"
+  local e=0
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    (( e >= show_e )) && break
+    local from to kind
+    IFS='|' read -r from to kind <<< "$line"
+    echo "  ${from},${to},${kind}"
+    (( e++ )) || true
+  done < <(sort "$tmp_edges")
+
+  rm -f "$tmp_nodes" "$tmp_edges" "$hubs_tmp"
+
+  local hints=()
+  (( node_count > node_limit || edge_count > edge_limit )) \
+    && hints+=("Run \`chezmoi-axi graph --full\` to see all nodes and edges")
+  hints+=("Run \`chezmoi-axi status\` for current state")
+  help_hint "${hints[@]}"
+}
+
 cmd_commit() {
   local message="${1:-}"
 
@@ -674,6 +983,7 @@ cmd_help() {
   echo "  status       Show current state at a glance"
   echo "  list         List managed files [--changed] [--encrypted]"
   echo "  diff         Show diffs between source and installed"
+  echo "  graph        Show relationship graph [--full] [--nodes N] [--edges N]"
   echo "  add          Add file to source state [--encrypt]"
   echo "  re-add       Capture on-disk changes [--all]"
   echo "  apply        Apply source state to installed files"
@@ -695,6 +1005,7 @@ main() {
     status)   cmd_status "$@" ;;
     list|ls)  cmd_list "$@" ;;
     diff)     cmd_diff "$@" ;;
+    graph)    cmd_graph "$@" ;;
     add)      cmd_add "$@" ;;
     re-add)   cmd_readd "$@" ;;
     apply)    cmd_apply "$@" ;;
@@ -704,7 +1015,7 @@ main() {
     help|-h|--help) cmd_help "$@" ;;
     *)
       echo "error: unknown command: $cmd"
-      echo "help: valid commands: status, list, diff, add, re-add, apply, verify, sync, commit, help"
+      echo "help: valid commands: status, list, diff, graph, add, re-add, apply, verify, sync, commit, help"
       exit 2
       ;;
   esac

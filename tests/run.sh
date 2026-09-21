@@ -311,6 +311,56 @@ assert_contains "$out" "error: unknown command: bogusxyz"
 assert_rc 2 "$rc"
 
 # ============================================================================
+# graph
+# ============================================================================
+
+note "graph with empty source dir is a definitive empty state"
+rm -rf "${SRC:?}" "${SRC}/..?*"
+mkdir -p "${SRC}"
+out=$(run_wrapper graph 2>/dev/null || true)
+assert_contains "$out" "graph: 0 nodes found in source tree"
+
+note "graph discovers nodes from the source tree"
+mkdir -p "${SRC}/dot_config/systemd/user" "${SRC}/dot_local/bin"
+touch "${SRC}/dot_bashrc"
+touch "${SRC}/dot_config/systemd/user/fleet-backup.service"
+touch "${SRC}/dot_config/systemd/user/fleet-backup.timer"
+touch "${SRC}/dot_local/bin/executable_fleet-backup.sh"
+out=$(run_wrapper graph 2>/dev/null || true)
+assert_contains "$out" "graph:"
+assert_contains "$out" "nodes:"
+assert_contains "$out" "edges:"
+
+note "graph classifies systemd units as svc"
+assert_contains "$out" "dot_config/systemd/user/fleet-backup.service,svc"
+
+note "graph classifies timers as timer"
+assert_contains "$out" "dot_config/systemd/user/fleet-backup.timer,timer"
+
+note "graph classifies executable scripts"
+assert_contains "$out" "executable_fleet-backup.sh,script"
+
+note "graph extracts ExecStart edges"
+printf 'ExecStart=%%h/.local/bin/fleet-backup.sh\n' > "${SRC}/dot_config/systemd/user/fleet-backup.service"
+out=$(run_wrapper graph 2>/dev/null || true)
+assert_contains "$out" "unit->exec"
+
+note "graph infers timer->unit by name when no Unit= line"
+out=$(run_wrapper graph 2>/dev/null || true)
+assert_contains "$out" "timer->unit"
+
+note "graph --help exits 0"
+out=$(run_wrapper graph --help || true)
+assert_contains "$out" "Usage: chezmoi-axi graph"
+assert_rc 0 0
+
+note "graph rejects unknown flags (exit 2)"
+rc=0
+out=$(run_wrapper graph --bogus) || rc=$?
+assert_contains "$out" "error: unknown flag: --bogus"
+assert_rc 2 "$rc"
+
+# ============================================================================
 # summary
 # ============================================================================
 
