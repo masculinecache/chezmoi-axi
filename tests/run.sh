@@ -360,6 +360,31 @@ out=$(run_wrapper graph --bogus) || rc=$?
 assert_contains "$out" "error: unknown flag: --bogus"
 assert_rc 2 "$rc"
 
+note "graph discovers var-def edges from shell scripts"
+mkdir -p "${SRC}/dot_local/bin"
+printf 'export FOO=bar\nBAZ=qux\n' > "${SRC}/dot_local/bin/executable_test-vars.sh"
+out=$(run_wrapper graph --nodes 200 2>/dev/null || true)
+assert_contains "$out" "var-def"
+
+note "graph discovers var-ref edges from shell scripts"
+printf 'echo "$HOME"\necho "${PATH}"\n' > "${SRC}/dot_local/bin/executable_test-refs.sh"
+out=$(run_wrapper graph --nodes 200 2>/dev/null || true)
+assert_contains "$out" "var-ref"
+
+note "graph discovers Environment= var-def from systemd units"
+mkdir -p "${SRC}/dot_config/systemd/user"
+printf 'Environment=NODE_ENV=production\nEnvironment=HOME=%%h\n' > "${SRC}/dot_config/systemd/user/test-env.service"
+out=$(run_wrapper graph --nodes 200 2>/dev/null || true)
+assert_contains "$out" "var-def"
+assert_contains "$out" "NODE_ENV"
+assert_contains "$out" "HOME"
+
+note "graph discovers md-wikilink edges from markdown"
+mkdir -p "${SRC}/dot_agents/skills/test"
+printf 'See [[architecture]] and [[auth#OAuth]] for details.\n' > "${SRC}/dot_agents/skills/test/SKILL.md"
+out=$(run_wrapper graph --nodes 200 2>/dev/null || true)
+assert_contains "$out" "md-wikilink"
+
 # ============================================================================
 # summary
 # ============================================================================

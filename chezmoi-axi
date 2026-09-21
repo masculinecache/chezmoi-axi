@@ -793,6 +793,10 @@ cmd_graph() {
         echo "  script->source   source/. commands in shell scripts"
         echo "  script->bin      command calls via \$HOME/.local/bin references"
         echo "  symlink->target  symlink_ prefix resolution"
+        echo "  var-def          variable definitions (export VAR=, Environment=VAR=)"
+        echo "  var-ref          variable references (\$VAR, \${VAR})"
+        echo "  md-wikilink     [[wikilink]] references in markdown files"
+        echo "  md-link          [text](relative-path) links in markdown files"
         echo ""
         echo "With --output, writes a lat.md-convention markdown file:"
         echo "  - Index with wiki links at the top"
@@ -960,6 +964,65 @@ cmd_graph() {
         local b
         for b in $(echo "$bin_refs" | sed 's|.*bin/||' | sort -u); do
           [[ -n "$b" ]] && add_edge "$rel" "$b" "script->bin"
+        done
+        ;;
+    esac
+
+    # --- Variable definitions: export VAR=, VAR= (assignments), Environment=VAR= in systemd ---
+    case "$base" in
+      dot_bashrc|dot_zshrc|dot_zshenv.tmpl|dot_zshenv|dot_profile|\
+      executable_*|run_once_*|run_onchange_*)
+        local var_defs
+        var_defs=$(rg -o '(?:^|;|\s)(?:export\s+)?[A-Z_][A-Z0-9_]*=' "$full_path" 2>/dev/null \
+          | sed 's/^.*export[[:space:]]*//' | sed 's/^[[:space:]]*//' | sed 's/=.*//' | sort -u || true)
+        local vd
+        for vd in $var_defs; do
+          [[ -n "$vd" ]] && add_edge "$rel" "$vd" "var-def"
+        done
+        ;;
+      *.service|*.service.tmpl)
+        local env_defs
+        env_defs=$(rg -o 'Environment(?:=|[A-Z_][A-Z0-9_]*=)[^\n]*' "$full_path" 2>/dev/null || true)
+        while IFS= read -r ed; do
+          [[ -z "$ed" ]] && continue
+          local env_name
+          env_name=$(echo "$ed" | sed 's/^Environment[= ]*//' | sed 's/=.*//' | cut -d' ' -f1)
+          [[ -n "$env_name" ]] && add_edge "$rel" "$env_name" "var-def"
+        done <<< "$env_defs"
+        ;;
+    esac
+
+    # --- Variable references: $VAR and ${VAR} ---
+    case "$base" in
+      dot_bashrc|dot_zshrc|dot_zshenv.tmpl|dot_zshenv|dot_profile|\
+      executable_*|run_once_*|run_onchange_*)
+        local var_refs
+        var_refs=$(rg -o '\$\{[A-Z_][A-Z0-9_]*\}|\$[A-Z_][A-Z0-9_]*' "$full_path" 2>/dev/null \
+          | sed 's/^\${\|^\$//' | sed 's/}$//' | sort -u || true)
+        local vr
+        for vr in $var_refs; do
+          [[ -n "$vr" ]] && add_edge "$rel" "$vr" "var-ref"
+        done
+        ;;
+    esac
+
+    # --- Markdown cross-references: [[wikilinks]] and [text](relative-path) ---
+    case "$base" in
+      *.md)
+        local wiki_refs
+        wiki_refs=$(rg -o '\[\[([^\]|#]+)(?:#[^\]]+)?\]\]' "$full_path" 2>/dev/null \
+          | sed 's/^\[\[//' | sed 's/\]\]$//' | sed 's/#.*//' | sort -u || true)
+        local wr
+        for wr in $wiki_refs; do
+          [[ -n "$wr" ]] && add_edge "$rel" "$wr" "md-wikilink"
+        done
+
+        local md_links
+        md_links=$(rg -o '\[[^\]]+\]\((?!https?://)([^)]+)\)' "$full_path" 2>/dev/null \
+          | sed 's/.*(\(.*\))/\1/' | sort -u || true)
+        local ml
+        for ml in $md_links; do
+          [[ -n "$ml" ]] && add_edge "$rel" "$ml" "md-link"
         done
         ;;
     esac
