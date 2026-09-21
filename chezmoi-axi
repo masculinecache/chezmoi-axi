@@ -615,6 +615,9 @@ _sync_run() {
 
 src_to_target() {
   local src_rel="$1" path="$1"
+  local was_dot=false was_private=false
+  [[ "$src_rel" == dot_* ]] && was_dot=true
+  [[ "$src_rel" == private_* ]] && was_private=true
   path="${path#dot_}"
   path="${path#private_}"
   path="${path#executable_}"
@@ -624,34 +627,162 @@ src_to_target() {
   path="${path#run_onchange_}"
   path="${path#run_onchange_after_}"
   path="${path#run_onchange_before_}"
-  if [[ "$src_rel" == dot_* ]]; then
+  if [[ "$was_dot" == "true" ]]; then
     path=".${path}"
-  elif [[ "$src_rel" == private_dot_* ]]; then
+  elif [[ "$was_private" == "true" && "$src_rel" == private_dot_* ]]; then
     path=".${path}"
   fi
   path="${path%.tmpl}"
   path="${path%.age}"
-  if [[ "$src_rel" == dot_config/* || "$src_rel" == private_dot_config/* ]]; then
-    path=".config/${path#config/}"
-  fi
-  if [[ "$src_rel" == dot_local/* || "$src_rel" == private_dot_local/* ]]; then
-    path=".local/${path#local/}"
-  fi
   echo "~/${path}"
 }
 
+classify_group() {
+  local base="$1"
+  case "$base" in
+    executable_*)  echo "Scripts" ;;
+    symlink_*)     echo "Symlinks" ;;
+    encrypted_*)   echo "Encrypted" ;;
+    *.service.tmpl|*.service) echo "Systemd Units" ;;
+    *.timer)       echo "Timers" ;;
+    run_once_*)    echo "Run-Once Scripts" ;;
+    run_onchange_*) echo "Run-Onchange Scripts" ;;
+    *.tmpl)        echo "Templates" ;;
+    dot_*)         echo "Config Files" ;;
+    private_*)     echo "Private Files" ;;
+    *)             echo "Other Files" ;;
+  esac
+}
+
+classify_label() {
+  local kind="$1"
+  case "$kind" in
+    script)      echo "Shell script" ;;
+    symlink)     echo "Symlink" ;;
+    encrypted)   echo "Age-encrypted file" ;;
+    svc)         echo "Systemd service unit" ;;
+    timer)       echo "Systemd timer unit" ;;
+    run-once)    echo "Run-once script" ;;
+    run-onchange) echo "Run-onchange script" ;;
+    template)    echo "Chezmoi template" ;;
+    config)      echo "Config file" ;;
+    private)     echo "Private file" ;;
+    *)           echo "File" ;;
+  esac
+}
+
+graph_write_latmd() {
+  local nodes_file="$1" edges_file="$2" node_count="$3" edge_count="$4" out_path="$5"
+
+  local hubs_tmp
+  hubs_tmp=$(mktemp)
+  cut -d'|' -f2 "$edges_file" > "$hubs_tmp" || true
+  local hub_lines
+  hub_lines=$(sort "$hubs_tmp" 2>/dev/null | uniq -c | sort -rn | head -10 || true)
+
+  local edge_kinds
+  edge_kinds=$(cut -d'|' -f3 "$edges_file" 2>/dev/null | sort | uniq -c | sort -rn || true)
+
+  local out_dir
+  out_dir=$(dirname "$out_path")
+  mkdir -p "$out_dir"
+
+  {
+    echo "graph:"
+    echo "  generated-by: chezmoi-axi graph --output"
+    echo "  generated-at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    echo "  nodes: ${node_count}"
+    echo "  edges: ${edge_count}"
+
+    echo ""
+    echo "edge_kinds:"
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      echo "  ${line}"
+    done <<< "$edge_kinds"
+
+    echo ""
+    echo "hubs[10]{node,edges_in}:"
+    if [[ -n "$hub_lines" ]]; then
+      while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        local count node
+        count=$(echo "$line" | awk '{print $1}')
+        node=$(echo "$line" | awk '{$1=""; print}' | sed 's/^ //')
+        echo "  ${node},${count}"
+      done <<< "$hub_lines"
+    else
+      echo "  (none)"
+    fi
+
+    echo ""
+    echo "index[${node_count}]{group,node,target}:"
+    local current_group=""
+    while IFS= read -r rel; do
+      [[ -z "$rel" ]] && continue
+      local base group target_path
+      base=$(basename "$rel")
+      group=$(classify_group "$base")
+      target_path=$(src_to_target "$rel")
+      echo "  ${group},${rel},${target_path}"
+    done < <(sort "$nodes_file")
+
+    echo ""
+    echo "nodes[${node_count}]{source,type,target,outgoing,incoming}:"
+    while IFS= read -r rel; do
+      [[ -z "$rel" ]] && continue
+      local base kind kind_label target_path
+      base=$(basename "$rel")
+      kind=$(classify "$base")
+      kind_label=$(classify_label "$kind")
+      target_path=$(src_to_target "$rel")
+
+      local out_edges in_edges
+      out_edges=$(grep "^${rel}|" "$edges_file" 2>/dev/null | wc -l || true)
+      in_edges=$(grep "|${rel}|" "$edges_file" 2>/dev/null | wc -l || true)
+
+      echo "  ${rel},${kind},${target_path},${out_edges},${in_edges}"
+
+      local edges_for_node
+      edges_for_node=$(grep "^${rel}|" "$edges_file" 2>/dev/null | sort || true)
+      if [[ -n "$edges_for_node" ]]; then
+        echo "  outgoing:"
+        while IFS='|' read -r from to ekind; do
+          [[ -z "$ekind" ]] && continue
+          echo "    ${ekind},${to}"
+        done <<< "$edges_for_node"
+      fi
+
+      local incoming
+      incoming=$(grep "|${rel}|" "$edges_file" 2>/dev/null | sort || true)
+      if [[ -n "$incoming" ]]; then
+        echo "  incoming:"
+        while IFS='|' read -r ifrom ito ikind; do
+          [[ -z "$ikind" ]] && continue
+          echo "    ${ikind},${ifrom}"
+        done <<< "$incoming"
+      fi
+    done < <(sort "$nodes_file")
+
+  } > "$out_path"
+
+  rm -f "$hubs_tmp"
+}
+
 cmd_graph() {
-  local node_limit=50 edge_limit=100 full=false
+  local node_limit=50 edge_limit=100 full=false output=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --full)   full=true; shift ;;
       --nodes)  node_limit="$2"; shift 2 ;;
       --edges)  edge_limit="$2"; shift 2 ;;
+      --output) output="$2"; shift 2 ;;
       -h|--help)
-        echo "Usage: chezmoi-axi graph [--full] [--nodes N] [--edges N]"
+        echo "Usage: chezmoi-axi graph [--full] [--nodes N] [--edges N] [--output <file>]"
         echo "  --full       Show all nodes and edges (bypass caps)"
         echo "  --nodes N    Max nodes to display (default 50)"
         echo "  --edges N    Max edges to display (default 100)"
+        echo "  --output F   Write graph as lat.md-style markdown to file (implies --full)"
         echo ""
         echo "Parses the chezmoi source tree into a relationship graph:"
         echo "  source->target   filename conventions (dot_ executable_ symlink_ .tmpl)"
@@ -662,11 +793,20 @@ cmd_graph() {
         echo "  script->source   source/. commands in shell scripts"
         echo "  script->bin      command calls via \$HOME/.local/bin references"
         echo "  symlink->target  symlink_ prefix resolution"
+        echo ""
+        echo "With --output, writes a lat.md-convention markdown file:"
+        echo "  - Index with wiki links at the top"
+        echo "  - Sections grouped by domain concept"
+        echo "  - Each node has a heading, leading paragraph, and edge listings"
+        echo "  - Cross-references use [[wiki-link]] syntax"
         exit 0 ;;
-      -*) usage_error "unknown flag: $1" "chezmoi-axi graph [--full] [--nodes N] [--edges N]" ;;
-      *)  usage_error "unexpected argument: $1" "chezmoi-axi graph [--full] [--nodes N] [--edges N]" ;;
+      --output=*) output="${1#--output=}"; shift ;;
+      -*) usage_error "unknown flag: $1" "chezmoi-axi graph [--full] [--nodes N] [--edges N] [--output <file>]" ;;
+      *)  usage_error "unexpected argument: $1" "chezmoi-axi graph [--full] [--nodes N] [--edges N] [--output <file>]" ;;
     esac
   done
+
+  [[ -n "$output" ]] && full=true
 
   if ! command -v rg >/dev/null 2>&1; then
     die "ripgrep (rg) is required but not found on PATH" "Install ripgrep: https://github.com/BurntSushi/ripgrep"
@@ -769,7 +909,7 @@ cmd_graph() {
             | sed 's/%h/$HOME/g' \
             | sed 's/{{ *\.chezmoi\.homeDir *}}/$HOME/g')
           local bin_name
-          bin_name=$(echo "$cmd" | sed 's|\$HOME/||' | sed 's|/.*/||' | awk '{print $1}')
+          bin_name=$(echo "$cmd" | awk '{print $1}' | sed 's|.*/||')
           [[ -n "$bin_name" && "$bin_name" != *"="{{* ]] \
             && add_edge "$rel" "$bin_name" "unit->exec"
         done <<< "$exec_lines"
@@ -833,6 +973,14 @@ cmd_graph() {
     rm -f "$tmp_nodes" "$tmp_edges"
     echo "graph: 0 nodes found in source tree"
     help_hint "Run \`chezmoi-axi status\` to check source state"
+    return 0
+  fi
+
+  if [[ -n "$output" ]]; then
+    graph_write_latmd "$tmp_nodes" "$tmp_edges" "$node_count" "$edge_count" "$output"
+    rm -f "$tmp_nodes" "$tmp_edges"
+    echo "graph: wrote ${node_count} nodes, ${edge_count} edges to ${output}"
+    help_hint "Run \`chezmoi-axi graph\` for TOON output to stdout"
     return 0
   fi
 
@@ -983,7 +1131,7 @@ cmd_help() {
   echo "  status       Show current state at a glance"
   echo "  list         List managed files [--changed] [--encrypted]"
   echo "  diff         Show diffs between source and installed"
-  echo "  graph        Show relationship graph [--full] [--nodes N] [--edges N]"
+  echo "  graph        Show relationship graph [--full] [--nodes N] [--edges N] [--output <file>]"
   echo "  add          Add file to source state [--encrypt]"
   echo "  re-add       Capture on-disk changes [--all]"
   echo "  apply        Apply source state to installed files"
