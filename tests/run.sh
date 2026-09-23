@@ -385,6 +385,23 @@ printf 'See [[architecture]] and [[auth#OAuth]] for details.\n' > "${SRC}/dot_ag
 out=$(run_wrapper graph --nodes 200 2>/dev/null || true)
 assert_contains "$out" "md-wikilink"
 
+note "graph preserves spaces in wikilink targets"
+printf 'See [[Project Plan]] for details.\n' > "${SRC}/dot_agents/skills/test/PLAN.md"
+out=$(run_wrapper graph --nodes 200 2>/dev/null || true)
+assert_contains "$out" "Project Plan"
+
+note "graph discovers md-link edges from markdown"
+printf 'See [guide](docs/guide.md) for details.\n' > "${SRC}/dot_agents/skills/test/GUIDE.md"
+out=$(run_wrapper graph --nodes 200 2>/dev/null || true)
+assert_contains "$out" "md-link"
+assert_contains "$out" "docs/guide.md"
+
+note "graph discovers multi-assignment Environment= var-def from systemd units"
+printf 'Environment="FOO=one" BAR=two\n' > "${SRC}/dot_config/systemd/user/test-multi-env.service"
+out=$(run_wrapper graph --nodes 200 2>/dev/null || true)
+assert_contains "$out" "FOO"
+assert_contains "$out" "BAR"
+
 # ============================================================================
 # summary
 # ============================================================================

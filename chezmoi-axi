@@ -994,9 +994,13 @@ cmd_graph() {
         env_defs=$(rg -o 'Environment(?:=|[A-Z_][A-Z0-9_]*=)[^\n]*' "$full_path" 2>/dev/null || true)
         while IFS= read -r ed; do
           [[ -z "$ed" ]] && continue
-          local env_name
-          env_name=$(echo "$ed" | sed 's/^Environment[= ]*//' | sed 's/=.*//' | cut -d' ' -f1)
-          [[ -n "$env_name" ]] && add_edge "$rel" "$env_name" "var-def"
+          local env_content env_word env_var
+          env_content=$(echo "$ed" | sed 's/^Environment[= ]*//')
+          for env_word in $env_content; do
+            env_var="${env_word%%=*}"
+            env_var="${env_var//\"/}"
+            [[ -n "$env_var" ]] && add_edge "$rel" "$env_var" "var-def"
+          done
         done <<< "$env_defs"
         ;;
     esac
@@ -1022,17 +1026,17 @@ cmd_graph() {
         wiki_refs=$(rg -o '\[\[[^\[\]]+\]\]' "$full_path" 2>/dev/null \
           | sed 's/^\[\[//' | sed 's/\]\]$//' | sed 's/|.*//' | sed 's/#.*//' | sort -u || true)
         local wr
-        for wr in $wiki_refs; do
+        while IFS= read -r wr; do
           [[ -n "$wr" ]] && add_edge "$rel" "$wr" "md-wikilink"
-        done
+        done <<< "$wiki_refs"
 
         local md_links
-        md_links=$(rg -o '\[[^\]]+\]\((?!https?://)[^)\n]+\)' "$full_path" 2>/dev/null \
-          | sed 's/^[^]]*\](\(.*\))$/\1/' | sort -u || true)
+        md_links=$(rg -o '\[[^\]]+\]\([^)]+\)' "$full_path" 2>/dev/null \
+          | sed 's/^[^]]*\](\(.*\))$/\1/' | grep -v '^https\?://' | sort -u || true)
         local ml
-        for ml in $md_links; do
+        while IFS= read -r ml; do
           [[ -n "$ml" ]] && add_edge "$rel" "$ml" "md-link"
-        done
+        done <<< "$md_links"
         ;;
     esac
   done < "$tmp_nodes"
