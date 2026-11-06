@@ -144,7 +144,7 @@ case "$cmd" in
     fi
     if (( ! exclude_scripts )) && [[ -f "${FIXTURE}/pending_scripts.txt" ]]; then
       while read -r s; do
-        [[ -n "$s" ]] && echo "QR ${s}"
+        [[ -n "$s" ]] && echo " R ${s}"
       done < "${FIXTURE}/pending_scripts.txt"
     fi
     exit 0

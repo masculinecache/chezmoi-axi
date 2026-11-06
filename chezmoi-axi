@@ -465,10 +465,13 @@ cmd_verify() {
   local raw="" rc=0
   raw=$(chezmoi status --exclude scripts 2>&1) || rc=$?
 
-  # Pending run_ scripts (target-status char R, e.g. "QR run_x.sh") execute on
-  # next apply and are not file drift; surface them without failing.
+  # Pending run_ scripts (target-status char R, e.g. "QR run_x.sh" or
+  # " R run_x.sh") execute on next apply and are not file drift; surface
+  # them without failing. Match on the raw line's first two chars — awk
+  # field-splitting collapses the leading space, so $1-based indexing
+  # misses the real-world " R <script>" form.
   local pending_scripts
-  pending_scripts=$(chezmoi status 2>/dev/null | awk 'substr($1, 2, 1) == "R"' | wc -l || true)
+  pending_scripts=$(chezmoi status 2>/dev/null | awk 'substr($0, 1, 2) ~ /^.R|R./' | wc -l || true)
 
   if [[ -n "$raw" ]]; then
     local drift_count
