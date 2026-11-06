@@ -458,27 +458,41 @@ cmd_apply() {
 }
 
 cmd_verify() {
-  local drift_count=0
-  local output
+  # Use `chezmoi status` rather than `chezmoi verify`: status reports disk
+  # drift (M), pending first-time installs (A) and deletions (D) in one pass,
+  # and its exit code is meaningful (the old code ran `chezmoi verify || true`
+  # and grepped stdout, silently passing when verify failed with no output).
+  local raw="" rc=0
+  raw=$(chezmoi status --exclude scripts 2>&1) || rc=$?
 
-  # chezmoi verify exits 1 for untracked files too; use diff for actual drift detection
-  output=$(chezmoi verify 2>&1 || true)
-  drift_count=$(echo "$output" | grep -c 'has changed' || true)
+  # Pending run_ scripts (target-status char R, e.g. "QR run_x.sh") execute on
+  # next apply and are not file drift; surface them without failing.
+  local pending_scripts
+  pending_scripts=$(chezmoi status 2>/dev/null | awk 'substr($1, 2, 1) == "R"' | wc -l || true)
 
-  # Also check if verify failed but produced no "has changed" lines (untracked files)
-  if (( drift_count > 0 )); then
+  if [[ -n "$raw" ]]; then
+    local drift_count
+    drift_count=$(echo "$raw" | grep -c . || true)
     echo "verify: ${drift_count} files have drifted from source state"
-    echo "$output" | head -10
+    echo "$raw" | head -10
     help_hint "Run \`chezmoi-axi diff\` to see what changed" \
-              "Run \`chezmoi-axi re-add --all\` to capture changes"
+              "Run \`chezmoi-axi apply\` to render source state to disk" \
+              "Run \`chezmoi-axi re-add --all\` to capture disk changes into source"
     return 1
   fi
 
-  # Check for untracked files (files on disk not in source state)
-  local untracked
-  untracked=$(chezmoi managed --include files 2>/dev/null | wc -l || true)
-  local target_files
-  target_files=$(find "${HOME}" -maxdepth 1 -name '.*' -type f 2>/dev/null | wc -l || true)
+  if (( rc != 0 )); then
+    echo "error: chezmoi status failed (rc=${rc})"
+    [[ -n "$raw" ]] && echo "$raw"
+    help_hint "Run \`chezmoi-axi status\` to inspect chezmoi state"
+    return 1
+  fi
+
+  if (( pending_scripts > 0 )); then
+    echo "verify: all tracked files match source state; ${pending_scripts} script(s) pending"
+    help_hint "Run \`chezmoi-axi apply\` to execute pending run_ scripts"
+    return 0
+  fi
 
   echo "verify: all tracked files match source state"
   help_hint "Run \`chezmoi-axi list\` to see managed files" \

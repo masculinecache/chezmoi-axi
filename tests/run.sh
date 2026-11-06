@@ -171,6 +171,14 @@ assert_contains "$out" "verify: 1 files have drifted"
 assert_rc 1 "$rc"
 rm -f "${FIXTURE}/drifted.txt"
 
+note "verify clean with pending scripts reports them without failing"
+printf 'run_after_patch.sh.tmpl\n' > "${FIXTURE}/pending_scripts.txt"
+rc=0
+out=$(run_wrapper verify) || rc=$?
+assert_contains "$out" "verify: all tracked files match source state; 1 script(s) pending"
+assert_rc 0 "$rc"
+rm -f "${FIXTURE}/pending_scripts.txt"
+
 # ============================================================================
 # add
 # ============================================================================

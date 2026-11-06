@@ -130,6 +130,25 @@ case "$cmd" in
     fi
     exit 0
     ;;
+  status)
+    # Mirror real `chezmoi status`: two status chars, space, target path.
+    # `--exclude scripts` drops pending run_ script (R) entries.
+    exclude_scripts=0
+    if [[ "${1:-}" == "--exclude" && "${2:-}" == "scripts" ]]; then
+      exclude_scripts=1
+    fi
+    if [[ -f "${FIXTURE}/drifted.txt" ]]; then
+      while read -r f; do
+        [[ -n "$f" ]] && echo " M ${f}"
+      done < "${FIXTURE}/drifted.txt"
+    fi
+    if (( ! exclude_scripts )) && [[ -f "${FIXTURE}/pending_scripts.txt" ]]; then
+      while read -r s; do
+        [[ -n "$s" ]] && echo "QR ${s}"
+      done < "${FIXTURE}/pending_scripts.txt"
+    fi
+    exit 0
+    ;;
   re-add)
     if [[ "${1:-}" == "--dry-run" ]]; then
       shift
