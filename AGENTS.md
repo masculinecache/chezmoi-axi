@@ -61,3 +61,9 @@ CREDENTIAL RULE: every GitHub operation on this repo uses the masculinecache acc
   both under a fake `HOME` so no real state is touched.
 - Publish is owned by firstmate (granular token must cover the `@masculinecache` scope); when a CI publish job
   is added, follow the wrangler-axi `.github/workflows/publish.yml` precedent.
+
+## Git commit identity
+
+Committing agents set `GIT_AUTHOR_NAME`/`GIT_COMMITTER_NAME` to `<model>@<hostname -s>` at commit time.
+
+## Secrets
